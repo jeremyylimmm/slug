@@ -267,7 +267,7 @@ mod slime {
             let white_occ = self.bb[..6].iter().fold(0, |acc, x| acc | x);
             let black_occ = self.bb[6..].iter().fold(0, |acc, x| acc | x);
 
-            let (_allies, enemies) = match self.stm {
+            let (allies, enemies) = match self.stm {
                 Side::White => (white_occ, black_occ),
                 Side::Black => (black_occ, white_occ),
             };
@@ -341,6 +341,24 @@ mod slime {
                         moves.push(Move::new(from, to, None));
                     }
                 }
+            }
+
+            // knight_moves
+
+            let knights = self.bb[bb_idx(Piece::Knight, self.stm)];
+
+            for from in knights.iter_bb() {
+                for to in knight_moves(from, allies).iter_bb() {
+                    moves.push(Move::new(from, to, None));
+                }
+            }
+
+            // king moves
+
+            let king = self.bb[bb_idx(Piece::King, self.stm)].trailing_zeros();
+
+            for to in king_moves(king as Sq, allies).iter_bb() {
+                moves.push(Move::new(king as Sq, to, None));
             }
 
             moves
@@ -647,6 +665,36 @@ mod slime {
 
     fn black_pawn_right_captures(bb: u64, mask: u64) -> (u64, i32) {
         (((bb >> 7) & !BB_FILE_A) & mask, -7)
+    }
+
+    fn knight_moves(sq: Sq, allies: u64) -> u64 {
+        let knight = sq.to_bb();
+
+        let m0 = knight << 6 &  !(BB_FILE_G | BB_FILE_H);
+        let m1 = knight << 15 & !(BB_FILE_H);
+        let m2 = knight << 17 & !(BB_FILE_A);
+        let m3 = knight << 10 & !(BB_FILE_A | BB_FILE_B);
+        let m4 = knight >> 6 &  !(BB_FILE_A | BB_FILE_B);
+        let m5 = knight >> 15 & !(BB_FILE_A);
+        let m6 = knight >> 17 & !(BB_FILE_H);
+        let m7 = knight >> 10 & !(BB_FILE_G | BB_FILE_H);
+
+        (m0 | m1 | m2 | m3 | m4 | m5 | m6 | m7) & !allies
+    }
+
+    fn king_moves(sq: Sq, allies: u64) -> u64 {
+        let king = sq.to_bb();
+
+        let m0 = (king << 7) & !BB_FILE_H;
+        let m1 = king << 8;
+        let m2 = (king << 9) & !BB_FILE_A;
+        let m3 = (king << 1) & !BB_FILE_A;
+        let m4 = (king >> 7) & !BB_FILE_A;
+        let m5 = king >> 8;
+        let m6 = (king >> 9) & !BB_FILE_H;
+        let m7 = (king >> 1) & !BB_FILE_H;
+
+        (m0 | m1 | m2 | m3 | m4 | m5 | m6 | m7) & !allies
     }
 
     struct BBIterator {
