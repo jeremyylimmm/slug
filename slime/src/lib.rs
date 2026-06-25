@@ -15,6 +15,40 @@ mod slime {
     const CAN_KCASTLE_WHITE: u8 = 1 << 2;
     const CAN_KCASTLE_BLACK: u8 = 1 << 3;
 
+    #[allow(unused)]
+    const BB_RANK_1: u64 = 0x00000000000000ff;
+    #[allow(unused)]
+    const BB_RANK_2: u64 = 0x000000000000ff00;
+    #[allow(unused)]
+    const BB_RANK_3: u64 = 0x0000000000ff0000;
+    #[allow(unused)]
+    const BB_RANK_4: u64 = 0x00000000ff000000;
+    #[allow(unused)]
+    const BB_RANK_5: u64 = 0x000000ff00000000;
+    #[allow(unused)]
+    const BB_RANK_6: u64 = 0x0000ff0000000000;
+    #[allow(unused)]
+    const BB_RANK_7: u64 = 0x00ff000000000000;
+    #[allow(unused)]
+    const BB_RANK_8: u64 = 0xff00000000000000;
+
+    #[allow(unused)]
+    const BB_FILE_A: u64 = 0x0101010101010101;
+    #[allow(unused)]
+    const BB_FILE_B: u64 = 0x0202020202020202;
+    #[allow(unused)]
+    const BB_FILE_C: u64 = 0x0404040404040404;
+    #[allow(unused)]
+    const BB_FILE_D: u64 = 0x0808080808080808;
+    #[allow(unused)]
+    const BB_FILE_E: u64 = 0x1010101010101010;
+    #[allow(unused)]
+    const BB_FILE_F: u64 = 0x2020202020202020;
+    #[allow(unused)]
+    const BB_FILE_G: u64 = 0x4040404040404040;
+    #[allow(unused)]
+    const BB_FILE_H: u64 = 0x8080808080808080;
+
     #[pyclass(from_py_object)]
     #[derive(Copy, Clone)]
     enum Piece {
@@ -223,6 +257,93 @@ mod slime {
             out.push_str(&format!("Fullmoves: {}\n", self.fullmoves));
 
             out
+        }
+
+        fn gen_pseudolegal_moves(&self) -> Vec<Move> {
+            let mut moves = vec![];
+
+            let occ = self.bb.iter().fold(0, |acc, x| acc | x);
+
+            let white_occ = self.bb[..6].iter().fold(0, |acc, x| acc | x);
+            let black_occ = self.bb[6..].iter().fold(0, |acc, x| acc | x);
+
+            let (_allies, enemies) = match self.stm {
+                Side::White => (white_occ, black_occ),
+                Side::Black => (black_occ, white_occ),
+            };
+
+            // pawn single and double pushes
+
+            let pawns = self.bb[bb_idx(Piece::Pawn, self.stm)];
+
+            let (pawn_pushes, pawn_double_pushes, pawn_push_dir, promotion_rank) = match self.stm {
+                Side::White => (
+                    white_pawn_pushes(pawns, occ),
+                    white_pawn_double_pushes(pawns, occ),
+                    1,
+                    7,
+                ),
+                Side::Black => (
+                    black_pawn_pushes(pawns, occ),
+                    black_pawn_double_pushes(pawns, occ),
+                    -1,
+                    0,
+                ),
+            };
+
+            for to in pawn_pushes.iter_bb() {
+                let from = (to as i32 - 8 * pawn_push_dir) as usize;
+
+                if to.rank() == promotion_rank {
+                    moves.push(Move::new(from, to, Some(Piece::Knight)));
+                    moves.push(Move::new(from, to, Some(Piece::Bishop)));
+                    moves.push(Move::new(from, to, Some(Piece::Rook)));
+                    moves.push(Move::new(from, to, Some(Piece::Queen)));
+                } else {
+                    moves.push(Move::new(from, to, None));
+                }
+            }
+
+            for to in pawn_double_pushes.iter_bb() {
+                let from = (to as i32 - 16 * pawn_push_dir) as usize;
+                moves.push(Move::new(from, to, None));
+            }
+
+            // pawn captures
+
+            let ep_bb = if let Some(ep) = self.ep {
+                ep.to_bb()
+            } else {
+                0
+            };
+
+            let (pawn_left_captures, pawn_right_captures) = match self.stm {
+                Side::White => (
+                    white_pawn_left_captures(pawns, enemies | ep_bb),
+                    white_pawn_right_captures(pawns, enemies | ep_bb),
+                ),
+                Side::Black => (
+                    black_pawn_left_captures(pawns, enemies | ep_bb),
+                    black_pawn_right_captures(pawns, enemies | ep_bb),
+                ),
+            };
+
+            for captures in [pawn_left_captures, pawn_right_captures] {
+                for to in captures.0.iter_bb() {
+                    let from = (to as i32 - captures.1) as usize;
+
+                    if to.rank() == promotion_rank {
+                        moves.push(Move::new(from, to, Some(Piece::Knight)));
+                        moves.push(Move::new(from, to, Some(Piece::Bishop)));
+                        moves.push(Move::new(from, to, Some(Piece::Rook)));
+                        moves.push(Move::new(from, to, Some(Piece::Queen)));
+                    } else {
+                        moves.push(Move::new(from, to, None));
+                    }
+                }
+            }
+
+            moves
         }
     }
 
@@ -493,6 +614,66 @@ mod slime {
                     "".to_string()
                 }
             );
+        }
+    }
+
+    fn white_pawn_pushes(bb: u64, occ: u64) -> u64 {
+        (bb << 8) & !occ
+    }
+
+    fn black_pawn_pushes(bb: u64, occ: u64) -> u64 {
+        (bb >> 8) & !occ
+    }
+
+    fn white_pawn_double_pushes(bb: u64, occ: u64) -> u64 {
+        (white_pawn_pushes(bb & BB_RANK_2, occ) << 8) & !occ
+    }
+
+    fn black_pawn_double_pushes(bb: u64, occ: u64) -> u64 {
+        (black_pawn_pushes(bb & BB_RANK_7, occ) >> 8) & !occ
+    }
+
+    fn white_pawn_left_captures(bb: u64, mask: u64) -> (u64, i32) {
+        (((bb << 7) & !BB_FILE_H) & mask, 7)
+    }
+
+    fn white_pawn_right_captures(bb: u64, mask: u64) -> (u64, i32) {
+        (((bb << 9) & !BB_FILE_A) & mask, 9)
+    }
+
+    fn black_pawn_left_captures(bb: u64, mask: u64) -> (u64, i32) {
+        (((bb >> 9) & !BB_FILE_H) & mask, -9)
+    }
+
+    fn black_pawn_right_captures(bb: u64, mask: u64) -> (u64, i32) {
+        (((bb >> 7) & !BB_FILE_A) & mask, -7)
+    }
+
+    struct BBIterator {
+        value: u64,
+    }
+
+    impl Iterator for BBIterator {
+        type Item = usize;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if self.value != 0 {
+                let x = self.value.trailing_zeros() as usize;
+                self.value &= self.value - 1;
+                Some(x)
+            } else {
+                None
+            }
+        }
+    }
+
+    trait Bitboard {
+        fn iter_bb(&self) -> BBIterator;
+    }
+
+    impl Bitboard for u64 {
+        fn iter_bb(&self) -> BBIterator {
+            BBIterator { value: *self }
         }
     }
 }
