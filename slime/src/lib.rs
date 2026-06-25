@@ -1,9 +1,13 @@
 use pyo3::prelude::*;
 
+mod generated;
+
 #[pymodule]
 mod slime {
     use pyo3::exceptions::PyValueError;
     use pyo3::prelude::*;
+
+    use super::generated::magic::*;
 
     type Sq = usize;
 
@@ -361,6 +365,36 @@ mod slime {
                 moves.push(Move::new(king as Sq, to, None));
             }
 
+            // bishop moves
+
+            let bishops = self.bb[bb_idx(Piece::Bishop, self.stm)];
+
+            for from in bishops.iter_bb() {
+                for to in bishop_moves(from, occ, allies).iter_bb() {
+                    moves.push(Move::new(from, to, None));
+                }
+            }
+
+            // rook moves
+
+            let rooks = self.bb[bb_idx(Piece::Rook, self.stm)];
+
+            for from in rooks.iter_bb() {
+                for to in rook_moves(from, occ, allies).iter_bb() {
+                    moves.push(Move::new(from, to, None));
+                }
+            }
+
+            // queen moves
+
+            let queens = self.bb[bb_idx(Piece::Queen, self.stm)];
+
+            for from in queens.iter_bb() {
+                for to in queen_moves(from, occ, allies).iter_bb() {
+                    moves.push(Move::new(from, to, None));
+                }
+            }
+
             moves
         }
     }
@@ -670,11 +704,11 @@ mod slime {
     fn knight_moves(sq: Sq, allies: u64) -> u64 {
         let knight = sq.to_bb();
 
-        let m0 = knight << 6 &  !(BB_FILE_G | BB_FILE_H);
+        let m0 = knight << 6 & !(BB_FILE_G | BB_FILE_H);
         let m1 = knight << 15 & !(BB_FILE_H);
         let m2 = knight << 17 & !(BB_FILE_A);
         let m3 = knight << 10 & !(BB_FILE_A | BB_FILE_B);
-        let m4 = knight >> 6 &  !(BB_FILE_A | BB_FILE_B);
+        let m4 = knight >> 6 & !(BB_FILE_A | BB_FILE_B);
         let m5 = knight >> 15 & !(BB_FILE_A);
         let m6 = knight >> 17 & !(BB_FILE_H);
         let m7 = knight >> 10 & !(BB_FILE_G | BB_FILE_H);
@@ -695,6 +729,28 @@ mod slime {
         let m7 = (king >> 1) & !BB_FILE_H;
 
         (m0 | m1 | m2 | m3 | m4 | m5 | m6 | m7) & !allies
+    }
+
+    fn bishop_moves(sq: Sq, occ: u64, allies: u64) -> u64 {
+        let index = ((occ & BISHOP_ATTACK_TABLE_MASK[sq])
+            .overflowing_mul(BISHOP_ATTACK_TABLE_MAGIC[sq])
+            .0
+            >> BISHOP_ATTACK_TABLE_SHIFT[sq]) as usize;
+
+        BISHOP_ATTACK_TABLE[sq][index] & !allies
+    }
+
+    fn rook_moves(sq: Sq, occ: u64, allies: u64) -> u64 {
+        let index = ((occ & ROOK_ATTACK_TABLE_MASK[sq])
+            .overflowing_mul(ROOK_ATTACK_TABLE_MAGIC[sq])
+            .0
+            >> ROOK_ATTACK_TABLE_SHIFT[sq]) as usize;
+
+        ROOK_ATTACK_TABLE[sq][index] & !allies
+    }
+
+    fn queen_moves(sq: Sq, occ: u64, allies: u64) -> u64 {
+        bishop_moves(sq, occ, allies) | rook_moves(sq, occ, allies)
     }
 
     struct BBIterator {

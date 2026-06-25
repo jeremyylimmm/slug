@@ -70,3 +70,6 @@ docs/_build/
 
 # Pyenv
 .python-version
+
+/src/generated/*
+!/src/generated/mod.rs
