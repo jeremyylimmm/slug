@@ -7,11 +7,15 @@ mod slime {
 
     type Sq = usize;
 
+    #[pyclass]
+    struct Move(u16);
+
     const CAN_QCASTLE_WHITE: u8 = 1 << 0;
     const CAN_QCASTLE_BLACK: u8 = 1 << 1;
     const CAN_KCASTLE_WHITE: u8 = 1 << 2;
     const CAN_KCASTLE_BLACK: u8 = 1 << 3;
 
+    #[pyclass(from_py_object)]
     #[derive(Copy, Clone)]
     enum Piece {
         Pawn = 0,
@@ -163,7 +167,7 @@ mod slime {
         fn __repr__(&self) -> String {
             let mut out = String::new();
 
-            let black_bb = self.bb[6..].iter().fold(0, |acc,x|acc|x);
+            let black_bb = self.bb[6..].iter().fold(0, |acc, x| acc | x);
 
             for r in (0..8).rev() {
                 for f in 0..8 {
@@ -172,8 +176,7 @@ mod slime {
                     out.push(if let Some(p) = self.board[sq] {
                         if sq.to_bb() & black_bb != 0 {
                             p.san()
-                        }
-                        else {
+                        } else {
                             p.san().to_ascii_uppercase()
                         }
                     } else {
@@ -208,7 +211,7 @@ mod slime {
             out.push_str(&format!(
                 "En-passant: {}",
                 if let Some(ep) = self.ep {
-                    ep.san().unwrap()
+                    ep.san()
                 } else {
                     "".to_string()
                 }
@@ -347,7 +350,7 @@ mod slime {
         fn from_coords(rank: usize, file: usize) -> Option<Self>
         where
             Self: Sized;
-        fn san(&self) -> Option<String>;
+        fn san(&self) -> String;
     }
 
     impl SquareMethods for Sq {
@@ -391,14 +394,14 @@ mod slime {
             Self::from_coords(rank.try_into().unwrap(), file.try_into().unwrap())
         }
 
-        fn san(&self) -> Option<String> {
+        fn san(&self) -> String {
             let file_map: Vec<char> = ('a'..='h').collect();
             let rank_map: Vec<char> = ('1'..='8').collect();
 
-            let &file = file_map.get(self.file())?;
-            let &rank = rank_map.get(self.rank())?;
+            let file = file_map[self.file()];
+            let rank = rank_map[self.rank()];
 
-            Some(format!("{}{}", file, rank))
+            format!("{}{}", file, rank)
         }
     }
 
@@ -409,6 +412,18 @@ mod slime {
     impl Piece {
         fn id(&self) -> usize {
             *self as usize
+        }
+
+        fn from_id(id: usize) -> Option<Self> {
+            match id {
+                0 => Some(Piece::Pawn),
+                1 => Some(Piece::Knight),
+                2 => Some(Piece::Bishop),
+                3 => Some(Piece::Rook),
+                4 => Some(Piece::Queen),
+                5 => Some(Piece::King),
+                _ => None,
+            }
         }
 
         fn san(&self) -> char {
@@ -433,6 +448,51 @@ mod slime {
                 Side::White => 'w',
                 Side::Black => 'b',
             }
+        }
+    }
+
+    #[pymethods]
+    impl Move {
+        #[new]
+        fn new(from: Sq, to: Sq, promotion: Option<Piece>) -> Self {
+            let p = if let Some(p) = promotion {
+                p.id() + 1
+            } else {
+                0
+            };
+
+            Self((from as u16 & 63) | ((to as u16 & 63) << 6) | ((p as u16) << 12))
+        }
+
+        fn from(&self) -> Sq {
+            (self.0 & 63) as Sq
+        }
+
+        fn to(&self) -> Sq {
+            ((self.0 >> 6) & 63) as Sq
+        }
+
+        fn promotion(&self) -> Option<Piece> {
+            let p = self.0 >> 12;
+
+            if p == 0 {
+                None
+            } else {
+                Some(Piece::from_id((p - 1) as usize).unwrap())
+            }
+        }
+
+        fn __repr__(&self) -> String {
+            return format!(
+                "{}{}{}",
+                self.from().san(),
+                self.to().san(),
+                if let Some(p) = self.promotion() {
+                    format!("{}", p.san())
+                } else {
+                    "".to_string()
+                }
+            );
         }
     }
 }
