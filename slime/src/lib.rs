@@ -500,6 +500,28 @@ mod slime {
             self.stm
         }
 
+        fn perft(&self, depth: i32) -> usize {
+            if depth <= 0 {
+                return 1;
+            }
+
+            let side = self.stm;
+            
+            let mut total = 0;
+
+            for mv in self.gen_pseudolegal_moves() {
+                let child = self.make_move(mv);
+
+                if child.checked(side) {
+                    continue;
+                }
+
+                total += child.perft(depth-1);
+            }
+
+            total
+        }
+
         fn make_move(&self, mv: Move) -> Position {
             let mut next = self.clone();
 

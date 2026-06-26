@@ -40,13 +40,13 @@ pos = Position(KIWIPETE_FEN)
 
 
 start_time = time.perf_counter()
-result = perft(pos, 6)
+result = pos.perft(6)
 end_time = time.perf_counter()
 
 elapsed = end_time - start_time
 nps = result / elapsed
 
-print(f"Perft(6) - Kiwipete: {result} ({nps/1000:.6}k nps)")
+print(f"Perft(5) - Kiwipete: {result} ({nps/1_000_000:.6}M nps)")
 
 #pos = pos.make_move(pos.from_uci_move("e5d7"))
 #splitperft(pos, 1)
