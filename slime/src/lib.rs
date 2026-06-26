@@ -53,6 +53,9 @@ mod slime {
     #[allow(unused)]
     const BB_FILE_H: u64 = 0x8080808080808080;
 
+    const KCASTLE_FILE_MASK: u64 = BB_FILE_F | BB_FILE_G;
+    const QCASTLE_FILE_MASK: u64 = BB_FILE_B | BB_FILE_C | BB_FILE_D;
+
     #[pyclass(from_py_object)]
     #[derive(Copy, Clone)]
     enum Piece {
@@ -64,6 +67,7 @@ mod slime {
         King,
     }
 
+    #[pyclass(from_py_object)]
     #[derive(Copy, Clone)]
     enum Side {
         White,
@@ -72,7 +76,7 @@ mod slime {
 
     #[pyclass]
     struct Position {
-        bb: [u64; 12],
+        bbs: [u64; 12],
         board: [Option<Piece>; 64],
         castling: u8,
         ep: Option<Sq>,
@@ -96,20 +100,20 @@ mod slime {
             .map_err(|x| PyValueError::new_err(x))?;
 
             let mut board = [None; 64];
-            let mut bb = [0; 12];
+            let mut bbs = [0; 12];
 
             for sq in 0..64 {
                 if let Some((piece, side)) = placement[sq] {
                     board[sq] = Some(piece);
-                    bb[bb_idx(piece, side)] |= sq.to_bb();
+                    bbs[bb_idx(piece, side)] |= sq.to_bb();
                 }
             }
 
-            if bb[bb_idx(Piece::King, Side::White)].count_ones() != 1 {
+            if bbs[bb_idx(Piece::King, Side::White)].count_ones() != 1 {
                 return Err(PyValueError::new_err("white does not have 1 king"));
             }
 
-            if bb[bb_idx(Piece::King, Side::Black)].count_ones() != 1 {
+            if bbs[bb_idx(Piece::King, Side::Black)].count_ones() != 1 {
                 return Err(PyValueError::new_err("black does not have 1 king"));
             }
 
@@ -192,7 +196,7 @@ mod slime {
             })?;
 
             Ok(Self {
-                bb,
+                bbs,
                 board,
                 stm,
                 castling,
@@ -205,7 +209,7 @@ mod slime {
         fn __repr__(&self) -> String {
             let mut out = String::new();
 
-            let black_bb = self.bb[6..].iter().fold(0, |acc, x| acc | x);
+            let black_bb = self.bbs[6..].iter().fold(0, |acc, x| acc | x);
 
             for r in (0..8).rev() {
                 for f in 0..8 {
@@ -263,13 +267,27 @@ mod slime {
             out
         }
 
+        fn has_kcastle_rights(&self, side: Side) -> bool {
+            match side {
+                Side::White => self.castling & CAN_KCASTLE_WHITE != 0,
+                Side::Black => self.castling & CAN_KCASTLE_BLACK != 0,
+            }
+        }
+
+        fn has_qcastle_rights(&self, side: Side) -> bool {
+            match side {
+                Side::White => self.castling & CAN_QCASTLE_WHITE != 0,
+                Side::Black => self.castling & CAN_QCASTLE_BLACK != 0,
+            }
+        }
+
         fn gen_pseudolegal_moves(&self) -> Vec<Move> {
             let mut moves = vec![];
 
-            let occ = self.bb.iter().fold(0, |acc, x| acc | x);
+            let occ = self.occ();
 
-            let white_occ = self.bb[..6].iter().fold(0, |acc, x| acc | x);
-            let black_occ = self.bb[6..].iter().fold(0, |acc, x| acc | x);
+            let white_occ = self.bbs[..6].iter().fold(0, |acc, x| acc | x);
+            let black_occ = self.bbs[6..].iter().fold(0, |acc, x| acc | x);
 
             let (allies, enemies) = match self.stm {
                 Side::White => (white_occ, black_occ),
@@ -278,7 +296,7 @@ mod slime {
 
             // pawn single and double pushes
 
-            let pawns = self.bb[bb_idx(Piece::Pawn, self.stm)];
+            let pawns = self.bb(Piece::Pawn, self.stm);
 
             let (pawn_pushes, pawn_double_pushes, pawn_push_dir, promotion_rank) = match self.stm {
                 Side::White => (
@@ -349,7 +367,7 @@ mod slime {
 
             // knight_moves
 
-            let knights = self.bb[bb_idx(Piece::Knight, self.stm)];
+            let knights = self.bb(Piece::Knight, self.stm);
 
             for from in knights.iter_bb() {
                 for to in knight_moves(from, allies).iter_bb() {
@@ -359,7 +377,7 @@ mod slime {
 
             // king moves
 
-            let king = self.bb[bb_idx(Piece::King, self.stm)].trailing_zeros();
+            let king = self.bb(Piece::King, self.stm).trailing_zeros();
 
             for to in king_moves(king as Sq, allies).iter_bb() {
                 moves.push(Move::new(king as Sq, to, None));
@@ -367,7 +385,7 @@ mod slime {
 
             // bishop moves
 
-            let bishops = self.bb[bb_idx(Piece::Bishop, self.stm)];
+            let bishops = self.bb(Piece::Bishop, self.stm);
 
             for from in bishops.iter_bb() {
                 for to in bishop_moves(from, occ, allies).iter_bb() {
@@ -377,7 +395,7 @@ mod slime {
 
             // rook moves
 
-            let rooks = self.bb[bb_idx(Piece::Rook, self.stm)];
+            let rooks = self.bb(Piece::Rook, self.stm);
 
             for from in rooks.iter_bb() {
                 for to in rook_moves(from, occ, allies).iter_bb() {
@@ -387,7 +405,7 @@ mod slime {
 
             // queen moves
 
-            let queens = self.bb[bb_idx(Piece::Queen, self.stm)];
+            let queens = self.bb(Piece::Queen, self.stm);
 
             for from in queens.iter_bb() {
                 for to in queen_moves(from, occ, allies).iter_bb() {
@@ -395,7 +413,97 @@ mod slime {
                 }
             }
 
+            // castling
+
+            let king_sq = self.bb(Piece::King, self.stm).trailing_zeros() as Sq;
+
+            let (home_rank, home_rank_mask) = match self.stm {
+                Side::White => (0, BB_RANK_1),
+                Side::Black => (7, BB_RANK_8),
+            };
+
+            let kcastle_mask = KCASTLE_FILE_MASK & home_rank_mask;
+            let qcastle_mask = QCASTLE_FILE_MASK & home_rank_mask;
+
+            let kcastle_path_attacked = kcastle_mask.iter_bb().any(|sq|self.attacked(sq, self.stm.opp()));
+            let qcastle_path_attacked = qcastle_mask.iter_bb().any(|sq|self.attacked(sq, self.stm.opp()));
+
+            let can_kcastle = self.has_kcastle_rights(self.stm)
+                && (occ & kcastle_mask == 0)
+                && !self.checked(self.stm)
+                && !kcastle_path_attacked;
+
+            let can_qcastle = self.has_qcastle_rights(self.stm)
+                && (occ & qcastle_mask == 0)
+                && !self.checked(self.stm)
+                && !qcastle_path_attacked;
+
+            if can_kcastle {
+                let rook_sq = Sq::from_coords(home_rank, 7).unwrap();
+                assert!(king_sq.file() == 4 && king_sq.rank() == home_rank);
+                assert!(self.bb(Piece::Rook, self.stm) & rook_sq.to_bb() != 0);
+                moves.push(Move::new(king_sq, rook_sq, None));
+            }
+
+            if can_qcastle {
+                let rook_sq = Sq::from_coords(home_rank, 0).unwrap();
+                assert!(king_sq.file() == 4 && king_sq.rank() == home_rank);
+                assert!(self.bb(Piece::Rook, self.stm) & rook_sq.to_bb() != 0);
+                moves.push(Move::new(king_sq, rook_sq, None));
+            }
+
             moves
+        }
+
+        fn occ(&self) -> u64 {
+            self.bbs.iter().fold(0, |acc, x| acc | x)
+        }
+
+        fn checked(&self, side: Side) -> bool {
+            let king_sq = self.bb(Piece::King, side).trailing_zeros() as Sq;
+            self.attacked(king_sq, side.opp())
+        }
+
+        fn attacked(&self, sq: Sq, attacker: Side) -> bool {
+            let occ = self.occ();
+
+            let pawn_attacks = match attacker {
+                Side::White => BLACK_PAWN_ATTACKS[sq],
+                Side::Black => WHITE_PAWN_ATTACKS[sq],
+            };
+
+            if self.bb(Piece::Pawn, attacker) & pawn_attacks != 0 {
+                return true;
+            }
+
+            if self.bb(Piece::Knight, attacker) & KNIGHT_ATTACKS[sq] != 0 {
+                return true;
+            }
+
+            let bish = bishop_attacks(sq, occ);
+            let rook = rook_attacks(sq, occ);
+
+            if self.bb(Piece::Bishop, attacker) & bish != 0 {
+                return true;
+            }
+
+            if self.bb(Piece::Rook, attacker) & rook != 0 {
+                return true;
+            }
+
+            if self.bb(Piece::Queen, attacker) & (bish | rook) != 0 {
+                return true;
+            }
+
+            if self.bb(Piece::King, attacker) & KING_ATTACKS[sq] != 0 {
+                return true;
+            }
+
+            false
+        }
+
+        fn bb(&self, piece: Piece, side: Side) -> u64 {
+            self.bbs[bb_idx(piece, side)]
         }
     }
 
@@ -622,6 +730,13 @@ mod slime {
                 Side::Black => 'b',
             }
         }
+
+        fn opp(&self) -> Side {
+            match self {
+                Side::White => Side::Black,
+                Side::Black => Side::White,
+            }
+        }
     }
 
     #[pymethods]
@@ -669,6 +784,94 @@ mod slime {
         }
     }
 
+    const WHITE_PAWN_ATTACKS: [u64; 64] = {
+        let mut table = [0u64; 64];
+
+        let mut sq = 0;
+
+        while sq < 64 {
+            let bb = 1u64 << sq;
+
+            let left = (bb << 7) & !BB_FILE_H;
+            let right = (bb << 9) & !BB_FILE_A;
+
+            table[sq] = left | right;
+
+            sq += 1;
+        }
+
+        table
+    };
+
+    const BLACK_PAWN_ATTACKS: [u64; 64] = {
+        let mut table = [0u64; 64];
+
+        let mut sq = 0;
+
+        while sq < 64 {
+            let bb = 1u64 << sq;
+
+            let left = (bb >> 9) & !BB_FILE_H;
+            let right = (bb >> 7) & !BB_FILE_A;
+
+            table[sq] = left | right;
+
+            sq += 1;
+        }
+
+        table
+    };
+
+    const KNIGHT_ATTACKS: [u64; 64] = {
+        let mut table = [0u64; 64];
+
+        let mut sq = 0;
+
+        while sq < 64 {
+            let knight = 1u64 << sq;
+
+            let m0 = knight << 6 & !(BB_FILE_G | BB_FILE_H);
+            let m1 = knight << 15 & !(BB_FILE_H);
+            let m2 = knight << 17 & !(BB_FILE_A);
+            let m3 = knight << 10 & !(BB_FILE_A | BB_FILE_B);
+            let m4 = knight >> 6 & !(BB_FILE_A | BB_FILE_B);
+            let m5 = knight >> 15 & !(BB_FILE_A);
+            let m6 = knight >> 17 & !(BB_FILE_H);
+            let m7 = knight >> 10 & !(BB_FILE_G | BB_FILE_H);
+
+            table[sq] = m0 | m1 | m2 | m3 | m4 | m5 | m6 | m7;
+
+            sq += 1;
+        }
+
+        table
+    };
+
+    const KING_ATTACKS: [u64; 64] = {
+        let mut table = [0u64; 64];
+
+        let mut sq = 0;
+
+        while sq < 64 {
+            let king = 1u64 << sq;
+
+            let m0 = (king << 7) & !BB_FILE_H;
+            let m1 = king << 8;
+            let m2 = (king << 9) & !BB_FILE_A;
+            let m3 = (king << 1) & !BB_FILE_A;
+            let m4 = (king >> 7) & !BB_FILE_A;
+            let m5 = king >> 8;
+            let m6 = (king >> 9) & !BB_FILE_H;
+            let m7 = (king >> 1) & !BB_FILE_H;
+
+            table[sq] = m0 | m1 | m2 | m3 | m4 | m5 | m6 | m7;
+
+            sq += 1;
+        }
+
+        table
+    };
+
     fn white_pawn_pushes(bb: u64, occ: u64) -> u64 {
         (bb << 8) & !occ
     }
@@ -702,51 +905,37 @@ mod slime {
     }
 
     fn knight_moves(sq: Sq, allies: u64) -> u64 {
-        let knight = sq.to_bb();
-
-        let m0 = knight << 6 & !(BB_FILE_G | BB_FILE_H);
-        let m1 = knight << 15 & !(BB_FILE_H);
-        let m2 = knight << 17 & !(BB_FILE_A);
-        let m3 = knight << 10 & !(BB_FILE_A | BB_FILE_B);
-        let m4 = knight >> 6 & !(BB_FILE_A | BB_FILE_B);
-        let m5 = knight >> 15 & !(BB_FILE_A);
-        let m6 = knight >> 17 & !(BB_FILE_H);
-        let m7 = knight >> 10 & !(BB_FILE_G | BB_FILE_H);
-
-        (m0 | m1 | m2 | m3 | m4 | m5 | m6 | m7) & !allies
+        KNIGHT_ATTACKS[sq] & !allies
     }
 
     fn king_moves(sq: Sq, allies: u64) -> u64 {
-        let king = sq.to_bb();
-
-        let m0 = (king << 7) & !BB_FILE_H;
-        let m1 = king << 8;
-        let m2 = (king << 9) & !BB_FILE_A;
-        let m3 = (king << 1) & !BB_FILE_A;
-        let m4 = (king >> 7) & !BB_FILE_A;
-        let m5 = king >> 8;
-        let m6 = (king >> 9) & !BB_FILE_H;
-        let m7 = (king >> 1) & !BB_FILE_H;
-
-        (m0 | m1 | m2 | m3 | m4 | m5 | m6 | m7) & !allies
+        KING_ATTACKS[sq] & !allies
     }
 
-    fn bishop_moves(sq: Sq, occ: u64, allies: u64) -> u64 {
+    fn bishop_attacks(sq: Sq, occ: u64) -> u64 {
         let index = ((occ & BISHOP_ATTACK_TABLE_MASK[sq])
             .overflowing_mul(BISHOP_ATTACK_TABLE_MAGIC[sq])
             .0
             >> BISHOP_ATTACK_TABLE_SHIFT[sq]) as usize;
 
-        BISHOP_ATTACK_TABLE[sq][index] & !allies
+        BISHOP_ATTACK_TABLE[sq][index]
     }
 
-    fn rook_moves(sq: Sq, occ: u64, allies: u64) -> u64 {
+    fn bishop_moves(sq: Sq, occ: u64, allies: u64) -> u64 {
+        bishop_attacks(sq, occ) & !allies
+    }
+
+    fn rook_attacks(sq: Sq, occ: u64) -> u64 {
         let index = ((occ & ROOK_ATTACK_TABLE_MASK[sq])
             .overflowing_mul(ROOK_ATTACK_TABLE_MAGIC[sq])
             .0
             >> ROOK_ATTACK_TABLE_SHIFT[sq]) as usize;
 
-        ROOK_ATTACK_TABLE[sq][index] & !allies
+        ROOK_ATTACK_TABLE[sq][index]
+    }
+
+    fn rook_moves(sq: Sq, occ: u64, allies: u64) -> u64 {
+        rook_attacks(sq, occ) & !allies
     }
 
     fn queen_moves(sq: Sq, occ: u64, allies: u64) -> u64 {
