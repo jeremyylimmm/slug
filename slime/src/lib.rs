@@ -11,7 +11,8 @@ mod slime {
 
     type Sq = usize;
 
-    #[pyclass]
+    #[pyclass(from_py_object)]
+    #[derive(Copy, Clone)]
     struct Move(u16);
 
     const CAN_QCASTLE_WHITE: u8 = 1 << 0;
@@ -53,11 +54,13 @@ mod slime {
     #[allow(unused)]
     const BB_FILE_H: u64 = 0x8080808080808080;
 
-    const KCASTLE_FILE_MASK: u64 = BB_FILE_F | BB_FILE_G;
-    const QCASTLE_FILE_MASK: u64 = BB_FILE_B | BB_FILE_C | BB_FILE_D;
+    const KCASTLE_EMPTY_FILE_MASK: u64 = BB_FILE_F | BB_FILE_G;
+    const QCASTLE_EMPTY_FILE_MASK: u64 = BB_FILE_B | BB_FILE_C | BB_FILE_D;
+    const KCASTLE_PATH_FILE_MASK: u64 = BB_FILE_F | BB_FILE_G;
+    const QCASTLE_PATH_FILE_MASK: u64 = BB_FILE_C | BB_FILE_D;
 
     #[pyclass(from_py_object)]
-    #[derive(Copy, Clone)]
+    #[derive(Copy, Clone, PartialEq)]
     enum Piece {
         Pawn = 0,
         Knight,
@@ -68,13 +71,14 @@ mod slime {
     }
 
     #[pyclass(from_py_object)]
-    #[derive(Copy, Clone)]
+    #[derive(Copy, Clone, PartialEq)]
     enum Side {
         White,
         Black,
     }
 
-    #[pyclass]
+    #[pyclass(from_py_object)]
+    #[derive(Copy, Clone)]
     struct Position {
         bbs: [u64; 12],
         board: [Option<Piece>; 64],
@@ -206,6 +210,29 @@ mod slime {
             })
         }
 
+        fn castling_rights_fen_notation(&self) -> String {
+            let mut out = String::new();
+
+            if self.castling & CAN_KCASTLE_WHITE != 0 {
+                out.push('K');
+            }
+            if self.castling & CAN_QCASTLE_WHITE != 0 {
+                out.push('Q');
+            }
+            if self.castling & CAN_KCASTLE_BLACK != 0 {
+                out.push('k');
+            }
+            if self.castling & CAN_QCASTLE_BLACK != 0 {
+                out.push('q');
+            }
+
+            if out.len() == 0 {
+                out.push('-');
+            }
+
+            out
+        }
+
         fn __repr__(&self) -> String {
             let mut out = String::new();
 
@@ -233,22 +260,7 @@ mod slime {
 
             out.push_str(&format!("Side-to-move: {}\n", self.stm.letter()));
 
-            out.push_str("Castling: ");
-
-            if self.castling & CAN_KCASTLE_WHITE != 0 {
-                out.push('K');
-            }
-            if self.castling & CAN_QCASTLE_WHITE != 0 {
-                out.push('Q');
-            }
-            if self.castling & CAN_KCASTLE_BLACK != 0 {
-                out.push('k');
-            }
-            if self.castling & CAN_QCASTLE_BLACK != 0 {
-                out.push('q');
-            }
-
-            out.push('\n');
+            out.push_str(&format!("Castling: {}\n", self.castling_rights_fen_notation()));
 
             out.push_str(&format!(
                 "En-passant: {}",
@@ -281,13 +293,20 @@ mod slime {
             }
         }
 
+        fn white_occ(&self) -> u64 {
+            self.bbs[..6].iter().fold(0, |acc, x| acc | x)
+        }
+        fn black_occ(&self) -> u64 {
+            self.bbs[6..].iter().fold(0, |acc, x| acc | x)
+        }
+
         fn gen_pseudolegal_moves(&self) -> Vec<Move> {
             let mut moves = vec![];
 
             let occ = self.occ();
 
-            let white_occ = self.bbs[..6].iter().fold(0, |acc, x| acc | x);
-            let black_occ = self.bbs[6..].iter().fold(0, |acc, x| acc | x);
+            let white_occ = self.white_occ();
+            let black_occ = self.black_occ();
 
             let (allies, enemies) = match self.stm {
                 Side::White => (white_occ, black_occ),
@@ -417,42 +436,323 @@ mod slime {
 
             let king_sq = self.bb(Piece::King, self.stm).trailing_zeros() as Sq;
 
-            let (home_rank, home_rank_mask) = match self.stm {
-                Side::White => (0, BB_RANK_1),
-                Side::Black => (7, BB_RANK_8),
-            };
+            let home_rank_mask = 0xffu64 << (8 * self.stm.home_rank());
 
-            let kcastle_mask = KCASTLE_FILE_MASK & home_rank_mask;
-            let qcastle_mask = QCASTLE_FILE_MASK & home_rank_mask;
+            let kcastle_empty_mask = KCASTLE_EMPTY_FILE_MASK & home_rank_mask;
+            let qcastle_empty_mask = QCASTLE_EMPTY_FILE_MASK & home_rank_mask;
 
-            let kcastle_path_attacked = kcastle_mask.iter_bb().any(|sq|self.attacked(sq, self.stm.opp()));
-            let qcastle_path_attacked = qcastle_mask.iter_bb().any(|sq|self.attacked(sq, self.stm.opp()));
+            let kcastle_path_mask = KCASTLE_PATH_FILE_MASK & home_rank_mask;
+            let qcastle_path_mask = QCASTLE_PATH_FILE_MASK & home_rank_mask;
+
+            let kcastle_path_attacked = kcastle_path_mask
+                .iter_bb()
+                .any(|sq| self.attacked(sq, self.stm.opp()));
+            let qcastle_path_attacked = qcastle_path_mask
+                .iter_bb()
+                .any(|sq| self.attacked(sq, self.stm.opp()));
 
             let can_kcastle = self.has_kcastle_rights(self.stm)
-                && (occ & kcastle_mask == 0)
+                && (occ & kcastle_empty_mask == 0)
                 && !self.checked(self.stm)
                 && !kcastle_path_attacked;
 
             let can_qcastle = self.has_qcastle_rights(self.stm)
-                && (occ & qcastle_mask == 0)
+                && (occ & qcastle_empty_mask == 0)
                 && !self.checked(self.stm)
                 && !qcastle_path_attacked;
 
             if can_kcastle {
-                let rook_sq = Sq::from_coords(home_rank, 7).unwrap();
-                assert!(king_sq.file() == 4 && king_sq.rank() == home_rank);
+                let rook_sq = Sq::from_coords(self.stm.home_rank(), 7).unwrap();
+                assert!(king_sq.file() == 4 && king_sq.rank() == self.stm.home_rank());
                 assert!(self.bb(Piece::Rook, self.stm) & rook_sq.to_bb() != 0);
                 moves.push(Move::new(king_sq, rook_sq, None));
             }
 
             if can_qcastle {
-                let rook_sq = Sq::from_coords(home_rank, 0).unwrap();
-                assert!(king_sq.file() == 4 && king_sq.rank() == home_rank);
+                let rook_sq = Sq::from_coords(self.stm.home_rank(), 0).unwrap();
+                assert!(king_sq.file() == 4 && king_sq.rank() == self.stm.home_rank());
                 assert!(self.bb(Piece::Rook, self.stm) & rook_sq.to_bb() != 0);
                 moves.push(Move::new(king_sq, rook_sq, None));
             }
 
             moves
+        }
+
+        fn castle(&self, mv: Move) -> Option<(Sq, i32)> {
+            let piece = self.board[mv.from()].unwrap();
+
+            let is_castle =
+                piece == Piece::King && self.bb(Piece::Rook, self.stm) & mv.to().to_bb() != 0;
+
+            if is_castle {
+                let dir = (mv.to().file() as i32 - mv.from().file() as i32).signum();
+                let new_file = mv.from().file() as i32 + (dir * 2);
+
+                let sq = Sq::from_coords(mv.from().rank(), new_file as Sq).unwrap();
+
+                Some((sq, dir))
+            } else {
+                None
+            }
+        }
+
+        fn stm(&self) -> Side {
+            self.stm
+        }
+
+        fn make_move(&self, mv: Move) -> Position {
+            let mut next = self.clone();
+
+            let start = self.board[mv.from()].unwrap();
+            let end = if let Some(prom) = mv.promotion() {
+                prom
+            } else {
+                start
+            };
+
+            let castle = self.castle(mv);
+
+            let to = if let Some((to, _)) = castle {
+                to
+            } else {
+                mv.to()
+            };
+
+            // remove moving piece
+
+            *next.bb_mut(start, self.stm) ^= mv.from().to_bb();
+            next.board[mv.from()] = None;
+
+            // remove capture piece
+
+            let capture = self.capture(mv);
+
+            if let Some((capture_sq, capture_piece)) = capture {
+                *next.bb_mut(capture_piece, self.stm.opp()) ^= capture_sq.to_bb();
+                next.board[capture_sq] = None;
+            }
+
+            // re-place moving piece
+
+            *next.bb_mut(end, self.stm) ^= to.to_bb();
+            next.board[to] = Some(end);
+
+            // move rook if castling
+
+            if let Some((castle_to, castle_dir)) = castle {
+                let new_file = castle_to.file() as i32 - castle_dir;
+
+                let rook_from = mv.to();
+                let rook_to = Sq::from_coords(castle_to.rank(), new_file as usize).unwrap();
+
+                *next.bb_mut(Piece::Rook, self.stm) ^= rook_from.to_bb() | rook_to.to_bb();
+                next.board[rook_from] = None;
+                next.board[rook_to] = Some(Piece::Rook);
+            }
+
+            // handle en-passant sq
+
+            next.ep = if start == Piece::Pawn && to.rank().abs_diff(mv.from().rank()) > 1 {
+                Some(to ^ 0b001000)
+            } else {
+                None
+            };
+
+            // handle castling rights
+
+            let (kcastle_flag, qcastle_flag) = match self.stm {
+                Side::White => (CAN_KCASTLE_WHITE, CAN_QCASTLE_WHITE),
+                Side::Black => (CAN_KCASTLE_BLACK, CAN_QCASTLE_BLACK),
+            };
+
+            let (opp_kcastle_flag, opp_qcastle_flag) = match self.stm {
+                Side::White => (CAN_KCASTLE_BLACK, CAN_QCASTLE_BLACK),
+                Side::Black => (CAN_KCASTLE_WHITE, CAN_QCASTLE_WHITE),
+            };
+
+            if start == Piece::King {
+                next.castling &= !(kcastle_flag | qcastle_flag);
+            } else if start == Piece::Rook {
+                if next.has_kcastle_rights(self.stm)
+                    && mv.from() == Sq::from_coords(self.stm.home_rank(), 7).unwrap()
+                {
+                    next.castling &= !kcastle_flag;
+                }
+
+                if next.has_qcastle_rights(self.stm)
+                    && mv.from() == Sq::from_coords(self.stm.home_rank(), 0).unwrap()
+                {
+                    next.castling &= !qcastle_flag;
+                }
+            }
+
+            match capture {
+                Some((capture_sq, Piece::Rook)) => {
+                    if next.has_kcastle_rights(self.stm.opp())
+                        && capture_sq == Sq::from_coords(self.stm.opp().home_rank(), 7).unwrap()
+                    {
+                        next.castling &= !opp_kcastle_flag;
+                    }
+
+                    if next.has_qcastle_rights(self.stm.opp())
+                        && capture_sq == Sq::from_coords(self.stm.opp().home_rank(), 0).unwrap()
+                    {
+                        next.castling &= !opp_qcastle_flag;
+                    }
+                }
+
+                _ => {}
+            }
+
+            if start == Piece::Pawn || capture.is_some() {
+                next.halfmove_clock = 0;
+            } else {
+                next.halfmove_clock += 1;
+            }
+
+            if self.stm == Side::Black {
+                next.fullmoves += 1;
+            }
+
+            next.stm = next.stm.opp();
+
+            next
+        }
+
+        fn capture(&self, mv: Move) -> Option<(Sq, Piece)> {
+            if self.castle(mv).is_some() {
+                return None;
+            }
+
+            let piece = self.board[mv.from()].unwrap();
+
+            if piece == Piece::Pawn {
+                if mv.to().file() != mv.from().file() {
+                    if let Some(capture_piece) = self.board[mv.to()] {
+                        Some((mv.to(), capture_piece))
+                    } else {
+                        // en passant
+                        let sq = mv.to() ^ 0b001000;
+                        let capture_piece = self.board[sq].unwrap();
+                        Some((sq, capture_piece))
+                    }
+                } else {
+                    None
+                }
+            } else {
+                if let Some(capture_piece) = self.board[mv.to()] {
+                    Some((mv.to(), capture_piece))
+                } else {
+                    None
+                }
+            }
+        }
+
+        fn from_uci_move(&self, uci: &str) -> Option<Move> {
+            let chars: Vec<char> = uci.chars().collect();
+
+            let f0 = *chars.get(0)? as usize - 'a' as usize;
+            let r0 = *chars.get(1)? as usize - '1' as usize;
+            let f1 = *chars.get(2)? as usize - 'a' as usize;
+            let r1 = *chars.get(3)? as usize - '1' as usize;
+
+            let prom = match chars.get(4) {
+                Some('n') => Some(Piece::Knight),
+                Some('b') => Some(Piece::Bishop),
+                Some('r') => Some(Piece::Rook),
+                Some('q') => Some(Piece::Queen),
+                _ => None,
+            };
+
+            let from = Sq::from_coords(r0, f0)?;
+            let mut to = Sq::from_coords(r1, f1)?;
+
+            if self.board[from].unwrap() == Piece::King && to.file().abs_diff(from.file()) > 1 {
+                let dir = (to.file() as i32 - from.file() as i32).signum();
+
+                let mut f = from.file() as i32;
+
+                to = loop {
+                    f += dir;
+                    let sq = Sq::from_coords(from.rank(), f as usize).unwrap();
+                    if matches!(self.board[sq], Some(Piece::Rook)) {
+                        break sq;
+                    }
+                };
+            }
+
+            Some(Move::new(from, to, prom))
+        }
+
+        fn to_uci_move(&self, mv: Move) -> String {
+            let from = mv.from();
+
+            let to = if let Some((to, _)) = self.castle(mv) {
+                to
+            } else {
+                mv.to()
+            };
+
+            let prom = if let Some(p) = mv.promotion() {
+                format!("{}", p.san())
+            } else {
+                "".to_string()
+            };
+
+            format!("{}{}{}", from.san(), to.san(), prom)
+        }
+
+        fn fen(&self) -> String {
+            let mut piece_placement = String::new();
+
+            let black_occ = self.black_occ();
+
+            for r in (0..8).rev() {
+                if r < 7 {
+                    piece_placement.push('/');
+                }
+
+                let mut f = 0;
+
+                while f < 8 {
+                    let sq = Sq::from_coords(r, f).unwrap();
+
+                    let black = sq.to_bb() & black_occ != 0;
+
+                    match self.board[sq] {
+                        Some(x) => {
+                            let x = if black {
+                                x.san()
+                            } else {
+                                x.san().to_ascii_uppercase()
+                            };
+                            piece_placement.push(x);
+                            f += 1;
+                        }
+
+                        None => {
+                            let mut gap = 1;
+                            while (f + gap) < 8
+                                && self.board[Sq::from_coords(r, f + gap).unwrap()].is_none()
+                            {
+                                gap += 1;
+                            }
+                            piece_placement.push_str(&format!("{}", gap));
+
+                            f += gap;
+                        }
+                    }
+                }
+            }
+
+            let ep = if let Some(ep) = self.ep {
+                ep.san()
+            }
+            else {
+                "-".to_string()
+            };
+
+            format!("{} {} {} {} {} {}", piece_placement, self.stm.letter(), self.castling_rights_fen_notation(), ep, self.halfmove_clock, self.fullmoves)
         }
 
         fn occ(&self) -> u64 {
@@ -504,6 +804,12 @@ mod slime {
 
         fn bb(&self, piece: Piece, side: Side) -> u64 {
             self.bbs[bb_idx(piece, side)]
+        }
+    }
+
+    impl Position {
+        fn bb_mut(&mut self, piece: Piece, side: Side) -> &mut u64 {
+            &mut self.bbs[bb_idx(piece, side)]
         }
     }
 
@@ -735,6 +1041,13 @@ mod slime {
             match self {
                 Side::White => Side::Black,
                 Side::Black => Side::White,
+            }
+        }
+
+        fn home_rank(&self) -> usize {
+            match self {
+                Side::White => 0,
+                Side::Black => 7,
             }
         }
     }
