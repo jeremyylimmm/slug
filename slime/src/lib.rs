@@ -260,7 +260,10 @@ mod slime {
 
             out.push_str(&format!("Side-to-move: {}\n", self.stm.letter()));
 
-            out.push_str(&format!("Castling: {}\n", self.castling_rights_fen_notation()));
+            out.push_str(&format!(
+                "Castling: {}\n",
+                self.castling_rights_fen_notation()
+            ));
 
             out.push_str(&format!(
                 "En-passant: {}",
@@ -298,6 +301,29 @@ mod slime {
         }
         fn black_occ(&self) -> u64 {
             self.bbs[6..].iter().fold(0, |acc, x| acc | x)
+        }
+
+        fn relative_material_balance(&self) -> i32 {
+            let mut result = 0;
+
+            for side in [Side::White, Side::Black] {
+                for p in [
+                    Piece::Pawn,
+                    Piece::Knight,
+                    Piece::Bishop,
+                    Piece::Rook,
+                    Piece::Queen,
+                ] {
+                    let count = self.bb(p, side).count_ones() as i32;
+                    result += side.sign() * p.centipawn_value() * count;
+                }
+            }
+
+            if self.stm == Side::White {
+                result
+            } else {
+                -result
+            }
         }
 
         fn gen_pseudolegal_moves(&self) -> Vec<Move> {
@@ -506,7 +532,7 @@ mod slime {
             }
 
             let side = self.stm;
-            
+
             let mut total = 0;
 
             for mv in self.gen_pseudolegal_moves() {
@@ -516,7 +542,7 @@ mod slime {
                     continue;
                 }
 
-                total += child.perft(depth-1);
+                total += child.perft(depth - 1);
             }
 
             total
@@ -769,12 +795,19 @@ mod slime {
 
             let ep = if let Some(ep) = self.ep {
                 ep.san()
-            }
-            else {
+            } else {
                 "-".to_string()
             };
 
-            format!("{} {} {} {} {} {}", piece_placement, self.stm.letter(), self.castling_rights_fen_notation(), ep, self.halfmove_clock, self.fullmoves)
+            format!(
+                "{} {} {} {} {} {}",
+                piece_placement,
+                self.stm.letter(),
+                self.castling_rights_fen_notation(),
+                ep,
+                self.halfmove_clock,
+                self.fullmoves
+            )
         }
 
         fn occ(&self) -> u64 {
@@ -1023,6 +1056,17 @@ mod slime {
             *self as usize
         }
 
+        fn centipawn_value(&self) -> i32 {
+            match self {
+                Piece::Pawn => 100,
+                Piece::Knight => 300,
+                Piece::Bishop => 300,
+                Piece::Rook => 500,
+                Piece::Queen => 1000,
+                Piece::King => 0,
+            }
+        }
+
         fn from_id(id: usize) -> Option<Self> {
             match id {
                 0 => Some(Piece::Pawn),
@@ -1050,6 +1094,13 @@ mod slime {
     impl Side {
         fn id(&self) -> usize {
             *self as usize
+        }
+
+        fn sign(&self) -> i32 {
+            match self {
+                Side::White => 1,
+                Side::Black => -1,
+            }
         }
 
         fn letter(&self) -> char {
@@ -1085,6 +1136,10 @@ mod slime {
             };
 
             Self((from as u16 & 63) | ((to as u16 & 63) << 6) | ((p as u16) << 12))
+        }
+
+        fn enc(&self) -> u16 {
+            self.0
         }
 
         fn from(&self) -> Sq {
